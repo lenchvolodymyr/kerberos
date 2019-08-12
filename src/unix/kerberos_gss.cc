@@ -381,7 +381,8 @@ end:
 gss_result* authenticate_gss_client_wrap(gss_client_state* state,
                                          const char* challenge,
                                          const char* user,
-                                         int protect) {
+                                         int protect,
+                                         int encode) {
     OM_uint32 maj_stat;
     OM_uint32 min_stat;
     gss_buffer_desc input_token = GSS_C_EMPTY_BUFFER;
@@ -402,10 +403,26 @@ gss_result* authenticate_gss_client_wrap(gss_client_state* state,
         input_token.length = len;
     }
 
+    if (encode) {
+        const char* output;
+        int result = sasl_gss_encode(
+            state,
+            &input_token,
+            &output,
+            protect
+        );
+
+        if (result) {
+            return gss_error_result_with_message("Something went wrong");
+        } else {
+            state->response = (char*)output;
+            return gss_success_result(AUTH_GSS_COMPLETE);
+        }
+    }
+
     if (user) {
         // get bufsize
-        // server_conf_flags = ((char*) input_token.value)[0];
-        ((char*)input_token.value)[0] = 0;
+        char server_conf_flags = ((char*) input_token.value)[0];
         buf_size = ntohl(*((long*)input_token.value));
         free(input_token.value);
 #ifdef PRINTFS
@@ -420,7 +437,7 @@ gss_result* authenticate_gss_client_wrap(gss_client_state* state,
         // agree to terms (hack!)
         buf_size = htonl(buf_size);  // not relevant without integrity/privacy
         memcpy(buf, &buf_size, 4);
-        buf[0] = GSS_AUTH_P_NONE;
+        buf[0] = (int)server_conf_flags;
         // server decides if principal can log in as user
         strncpy(buf + 4, user, sizeof(buf) - 4);
         input_token.value = buf;
@@ -779,6 +796,52 @@ static gss_result* gss_error_result_with_message_and_code(const char* message, i
     result->message = (char*)malloc(strlen(message) + 20);
     sprintf(result->message, "%s (%d)", message, code);
     return result;
+}
+
+int sasl_gss_encode(
+    gss_client_state *state,
+    gss_buffer_desc *real_input_token,
+    const char **output,
+    int privacy
+) {
+    OM_uint32 maj_stat, min_stat;
+    gss_buffer_t input_token, output_token;
+    gss_buffer_desc real_output_token;
+    
+    if (!output) return 1;
+    
+    input_token = real_input_token;
+    
+    output_token = &real_output_token;
+    output_token->value = NULL;
+    output_token->length = 0;
+    
+    maj_stat = gss_wrap(
+        &min_stat,
+        state->context,
+        privacy,
+        GSS_C_QOP_DEFAULT,
+        input_token,
+        NULL,
+        output_token
+    );
+    
+    if (maj_stat != GSS_S_COMPLETE) {
+        if (output_token->value) {
+            gss_release_buffer(&min_stat, output_token);
+        }
+
+        return 1;
+    }
+        
+    if (output_token->value) {
+        *output = base64_encode((const unsigned char*)output_token->value, output_token->length);
+    	gss_release_buffer(&min_stat, output_token);
+
+        return 0;
+    } else {
+        return 1;
+    }
 }
 
 #if defined(__clang__)
