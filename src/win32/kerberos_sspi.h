@@ -39,6 +39,7 @@ typedef struct {
     UCHAR haveCred;
     UCHAR haveCtx;
     ULONG qop;
+    ULONG sspi_re_flags;
 
     INT responseConf;
     BOOL context_complete;
