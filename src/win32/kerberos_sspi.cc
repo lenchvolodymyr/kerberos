@@ -15,6 +15,7 @@ sspi_client_state* sspi_client_state_new() {
     state->response = NULL;
     state->responseConf = 0;
     state->context_complete = FALSE;
+    state->sspi_re_flags = 0;
     return state;
 }
 
@@ -40,6 +41,9 @@ auth_sspi_client_clean(sspi_client_state* state) {
         free(state->username);
         state->username = NULL;
     }
+    if (state->sspi_re_flags) {
+        state->sspi_re_flags = 0;
+    }
 }
 
 sspi_result*
@@ -64,6 +68,8 @@ auth_sspi_client_init(WCHAR* service,
     state->haveCred = 0;
     state->haveCtx = 0;
     state->spn = _wcsdup(service);
+    state->sspi_re_flags = 0;
+
     if (state->spn == NULL) {
         return sspi_error_result_with_message("Ran out of memory assigning service");
     }
@@ -121,7 +127,6 @@ auth_sspi_client_step(sspi_client_state* state, SEC_CHAR* challenge, SecPkgConte
     SecBuffer inBufs[2];
     SecBufferDesc outbuf;
     SecBuffer outBufs[1];
-    ULONG ignored;
     SECURITY_STATUS status = AUTH_GSS_CONTINUE;
     DWORD len;
     BOOL haveToken = FALSE;
@@ -171,7 +176,12 @@ auth_sspi_client_step(sspi_client_state* state, SEC_CHAR* challenge, SecPkgConte
                                         /* Service Principal Name */
                                         state->spn,
                                         /* Flags */
-                                        ISC_REQ_ALLOCATE_MEMORY | state->flags,
+                                        ISC_REQ_MUTUAL_AUTH |
+                                        ISC_REQ_ALLOCATE_MEMORY |
+                                        ISC_REQ_INTEGRITY |
+                                        ISC_REQ_CONFIDENTIALITY |
+                                        ISC_REQ_REPLAY_DETECT
+                                        | state->flags,
                                         /* Always 0 */
                                         0,
                                         /* Target data representation */
@@ -185,7 +195,7 @@ auth_sspi_client_step(sspi_client_state* state, SEC_CHAR* challenge, SecPkgConte
                                         /* Output */
                                         &outbuf,
                                         /* Context attributes */
-                                        &ignored,
+                                        &state->sspi_re_flags,
                                         /* Expiry (We don't use this) */
                                         NULL);
 
@@ -310,6 +320,7 @@ auth_sspi_client_wrap(sspi_client_state* state,
     DWORD outbufSize;
     SEC_CHAR* plaintextMessage;
     ULONG plaintextMessageSize;
+    CHAR qop = 1;
 
     if (state->response != NULL) {
         free(state->response);
@@ -325,15 +336,16 @@ auth_sspi_client_wrap(sspi_client_state* state,
         return sspi_error_result(status, "QueryContextAttributes");
     }
 
+    decodedData = base64_decode(data, &plaintextMessageSize);
+
     if (*user) {
         /* Length of user + 4 bytes for security layer (see below). */
         plaintextMessageSize = ulen + 4;
-    } else {
-        decodedData = base64_decode(data, &plaintextMessageSize);
-        if (!decodedData) {
-            return sspi_error_result_with_message("Unable to base64 decode message");
-        }
+    } else if (!decodedData) {
+        return sspi_error_result_with_message("Unable to base64 decode message");
     }
+
+    qop = decodedData[0];
 
     inbufSize =
         sizes.cbSecurityTrailer + plaintextMessageSize + sizes.cbBlockSize;
@@ -348,7 +360,7 @@ auth_sspi_client_wrap(sspi_client_state* state,
         /* Authenticate the provided user. Unlike pykerberos, we don't
          * need any information from "data" to do that.
          */
-        plaintextMessage[0] = 1; /* No security layer */
+        plaintextMessage[0] = qop; /* No security layer */
         plaintextMessage[1] = 0;
         plaintextMessage[2] = 0;
         plaintextMessage[3] = 0;

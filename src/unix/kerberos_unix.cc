@@ -77,12 +77,17 @@ NAN_METHOD(KerberosClient::WrapData) {
     v8::Local<v8::Object> options = Nan::To<v8::Object>(info[1]).ToLocalChecked();
     Nan::Callback* callback = new Nan::Callback(Nan::To<v8::Function>(info[2]).ToLocalChecked());
     std::string user = StringOptionValue(options, "user");
-
-    int protect = 0; // NOTE: this should be an option
+    int encode = (int)UInt32OptionValue(options, "encode", 0);
+    int protect = (int)UInt32OptionValue(options, "protect", 0);
 
     KerberosWorker::Run(callback, "kerberos:ClientWrap", [=](KerberosWorker::SetOnFinishedHandler onFinished) {
         std::shared_ptr<gss_result> result(authenticate_gss_client_wrap(
-            client->state(), challenge.c_str(), user.c_str(), protect), ResultDeleter);
+            client->state(),
+            challenge.c_str(),
+            user.c_str(),
+            protect,
+            encode
+        ), ResultDeleter);
 
         return onFinished([=](KerberosWorker* worker) {
             Nan::HandleScope scope;
